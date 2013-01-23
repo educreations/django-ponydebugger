@@ -2,28 +2,48 @@ import ast
 import code
 import codeop
 import collections
+import json
+import logging
 
 from django_ponydebugger.domains.base import *
+from django_ponydebugger.exceptions import PonyError
+
+log = logging.getLogger(__name__)
 
 
 class RuntimePonyDomain(BasePonyDomain):
     def __init__(self, client):
         super(RuntimePonyDomain, self).__init__(client)
 
+        self._locals = {}
         self._consoles = collections.defaultdict(
-            lambda: PonyConsole(self.client.log))
+            lambda: PonyConsole(self.client.log, self._locals))
         self._remote_objects = {}
+        self._remote_objects_by_group = {}
+
+        # Pre-populate some entries in locals
+        self._consoles[''].pony('')
 
     def clear(self):
         self._consoles.clear()
-        self._remote_objects.clear()
 
     @pony_func
     def evaluate(self, params):
         """Run an arbitrary line of Python code."""
-        console = self._consoles[params.get('objectGroup', None)]
+        obj_group = params.get('objectGroup', '')
+        console = self._consoles[obj_group]
+        by_value = params.get('returnByValue', False)
 
         expr = params['expression']
+
+        # Support looking up 'this' for auto-completions.
+        if expr == 'this':
+            return {
+                'result': self._make_remote_object(
+                    self._locals, by_value, obj_group),
+                'wasThrown': False,
+            }
+
         # Some multi-line Python code must be terminated by a blank line, and
         # the PonyDebugger console doesn't allow a blank line, so we treat a
         # single '.' as a blank line.
@@ -33,7 +53,8 @@ class RuntimePonyDomain(BasePonyDomain):
         results = console.pony(expr)
         if results['error']:
             return {
-                'result': self._make_remote_object(results['error']),
+                'result': self._make_remote_object(
+                    results['error'], False, obj_group),
                 'wasThrown': True,
             }
         elif results['partial']:
@@ -46,14 +67,15 @@ class RuntimePonyDomain(BasePonyDomain):
             return {}
         else:
             return {
-                'result': self._make_remote_object(results['result']),
+                'result': self._make_remote_object(
+                    results['result'], by_value, obj_group),
                 'wasThrown': False,
             }
 
     @pony_func
     def getProperties(self, params):
         """Lookup properties of an object from evaluate or getProperties."""
-        obj = self._remote_objects[int(params['objectId'])]
+        obj, obj_group = self._remote_objects[int(params['objectId'])]
         props = []
 
         if isinstance(obj, (list, tuple, set, frozenset)):
@@ -62,41 +84,70 @@ class RuntimePonyDomain(BasePonyDomain):
                     'configurable': True,
                     'enumerable': True,
                     'name': str(i),
-                    'value': self._make_remote_object(value),
+                    'value': self._make_remote_object(value, False, obj_group),
                     'wasThrown': False,
                 })
 
-        elif isinstance(obj, dict):
+        if isinstance(obj, dict):
             for key, value in obj.iteritems():
                 props.append({
                     'configurable': True,
                     'enumerable': True,
                     'name': str(key),
-                    'value': self._make_remote_object(value),
+                    'value': self._make_remote_object(value, False, obj_group),
                     'wasThrown': False,
                 })
 
-        else:
-            for name in dir(obj):
-                if name.startswith('__') and name.endswith('__'):
-                    continue
-                try:
-                    value = getattr(obj, name)
-                    was_thrown = False
-                except AttributeError as exc:
-                    value = exc
-                    was_thrown = True
-                props.append({
-                    'configurable': True,
-                    'enumerable': True,
-                    'name': name,
-                    'value': self._make_remote_object(value),
-                    'wasThrown': was_thrown,
-                })
+        for name in dir(obj):
+            if name.startswith('__') and name.endswith('__'):
+                continue
+            try:
+                value = getattr(obj, name)
+                was_thrown = False
+            except AttributeError as exc:
+                value = exc
+                was_thrown = True
+            props.append({
+                'configurable': True,
+                'enumerable': True,
+                'name': name,
+                'value': self._make_remote_object(value, False, obj_group),
+                'wasThrown': was_thrown,
+            })
 
         return {'result': props}
 
-    def _make_remote_object(self, value):
+    @pony_func
+    def releaseObjectGroup(self, params):
+        obj_group = params.get('objectGroup', '')
+        for obj_id in self._remote_objects_by_group.pop(obj_group, []):
+            del self._remote_objects[obj_id]
+
+    @pony_func
+    def callFunctionOn(self, params):
+        obj, obj_group = self._remote_objects[int(params['objectId'])]
+        by_value = params.get('returnByValue', False)
+
+        pre_args = params['functionDeclaration'].split('(')[0]
+        if 'getCompletions' in pre_args:
+            func = self._get_completions
+        else:
+            raise PonyError('Unsupported function')
+
+        try:
+            result = func(obj, params.get('arguments', []))
+        except Exception as exc:
+            return {
+                'result': self._make_remote_object(exc, False, obj_group),
+                'wasThrown': True,
+            }
+        else:
+            return {
+                'result': self._make_remote_object(result, by_value, obj_group),
+                'wasThrown': False,
+            }
+
+    def _make_remote_object(self, value, by_value, obj_group):
         primitive_types = [
             (type(None), 'undefined'),
             (basestring, 'string'),
@@ -107,13 +158,50 @@ class RuntimePonyDomain(BasePonyDomain):
             if isinstance(value, type_or_list):
                 return {'type': js_name, 'value': value}
 
-        self._remote_objects[id(value)] = value
+        if by_value:
+            # Ensure that this is a JSON-serializable value
+            try:
+                json.dumps(value)
+            except (TypeError, ValueError):
+                log.error('Object %r was not JSON serializable', value)
+                raise PonyError(
+                    'Requested return-by-value, but result was not JSON '
+                    'serializable')
+            else:
+                return {'type': 'object', 'value': value}
+
+        self._remote_objects[id(value)] = (value, obj_group)
+        self._remote_objects_by_group.setdefault(
+            obj_group, set()).add(id(value))
         result = {
             'objectId': str(id(value)),
             'type': 'object',
             'description': repr(value),
             'className': str(type(value)),
         }
+        if len(result['description']) > 200:
+            result['description'] = result['description'][:197] + '...'
+        return result
+
+    def _get_completions(self, obj, args):
+        if args:
+            if args[0] == 'string':
+                obj = ''
+            elif args[0] == 'number':
+                obj = 0
+            elif args[0] == 'boolean':
+                obj = False
+        result = {}
+        if obj is self._locals:
+            for name in obj:
+                result[name] = True
+            for name in obj['__builtins__']:
+                result[name] = True
+        else:
+            for name in dir(obj):
+                if name.startswith('__') and name.endswith('__'):
+                    continue
+                result[name] = True
         return result
 
 
@@ -133,13 +221,12 @@ class PonyConsole(code.InteractiveConsole):
     output to PonyDebugger.
     """
 
-    def __init__(self, log):
-        local = {
-            '__name__': '__console__',
-            '__doc__': None,
-            '_pony_print': self._pony_print,
-            '_pony_result': self._pony_result,
-        }
+    def __init__(self, log, local):
+        if not local:
+            local.update({
+                '__name__': '__console__',
+                '__doc__': None,
+            })
         code.InteractiveConsole.__init__(self, local)
         self.compile.compiler = PonyConsole.PonyCompiler()
         self.log = log
@@ -158,6 +245,10 @@ class PonyConsole(code.InteractiveConsole):
         """Run a single line of Python code."""
         self.errors = []
         self.result = None
+        self.locals.update({
+            '_pony_print': self._pony_print,
+            '_pony_result': self._pony_result,
+        })
         partial = self.push(src)
         if partial:
             self.partial_count += 1
