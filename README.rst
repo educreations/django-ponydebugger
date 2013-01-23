@@ -2,9 +2,12 @@ django-ponydebugger
 ===================
 
 `PonyDebugger`_ is a remote debugging toolset that uses Chrome Developer
-Tools. It consists of 2 parts: a server (ponyd) and an iOS client
-library so you can debug your iOS apps. This project adds a Python
-client for debugging `Django`_ web apps.
+Tools. It consists of 2 parts: a server (`ponyd`_) and an iOS client
+library so you can debug your iOS apps.
+
+This project adds a Python client for debugging `Django`_ web apps.
+
+django-ponydebugger is licensed under the `MIT License`_.
 
 Features
 --------
@@ -52,3 +55,5 @@ Future Work
 
 .. _PonyDebugger: https://github.com/square/PonyDebugger
 .. _Django: https://www.djangoproject.com/
+.. _ponyd: https://github.com/square/PonyDebugger/blob/master/README_ponyd.rst
+.. _MIT License: http://opensource.org/licenses/MIT
