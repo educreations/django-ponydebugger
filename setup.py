@@ -1,14 +1,11 @@
-from os.path import join, dirname
+import os
 from setuptools import setup
 
 import django_ponydebugger
 
 
-with open(join(dirname(__file__), 'README.rst')) as f:
+with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as f:
     readme = f.read()
-
-with open(join(dirname(__file__), 'LICENSE')) as f:
-    license = f.read()
 
 setup(
     name='django-ponydebugger',
@@ -28,7 +25,7 @@ setup(
     author='Matthew Eastman',
     author_email='matt@educreations.com',
     url='https://github.com/educreations/django-ponydebugger',
-    license=license,
+    license='MIT',
     classifiers=[
         'Environment :: Web Environment',
         'Framework :: Django',
