@@ -1,8 +1,10 @@
 from setuptools import setup
 
+import django_ponydebugger
+
 setup(
     name='django-ponydebugger',
-    version='0.0.2',
+    version=django_ponydebugger.__version__,
     description='PonyDebugger support for Django',
     long_description=open('README.rst').read(),
     packages=[
