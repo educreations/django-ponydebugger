@@ -1,3 +1,4 @@
+from os.path import join, dirname
 from setuptools import setup
 
 import django_ponydebugger
@@ -6,7 +7,7 @@ setup(
     name='django-ponydebugger',
     version=django_ponydebugger.__version__,
     description='PonyDebugger support for Django',
-    long_description=open('README.rst').read(),
+    long_description=open(join(dirname(__file__), 'README.rst')).read(),
     packages=[
         'django_ponydebugger',
         'django_ponydebugger.domains',
